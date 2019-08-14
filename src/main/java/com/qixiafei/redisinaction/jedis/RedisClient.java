@@ -63,6 +63,7 @@ public class RedisClient {
         final GenericObjectPoolConfig config = buildConfig(maxTotal, maxIdle, minIdle, testWhileIdle);
         return new RedisClient(new JedisPool(config, host, port, connectionTimeOut, soTimeOut, password, 0,
                 "", false, null, null, null));
+
     }
 
     /**
