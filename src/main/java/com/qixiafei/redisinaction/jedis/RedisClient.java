@@ -1,6 +1,7 @@
 package com.qixiafei.redisinaction.jedis;
 
 import lombok.Data;
+import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.pool2.impl.GenericObjectPoolConfig;
 import redis.clients.jedis.BitOP;
 import redis.clients.jedis.Jedis;
@@ -19,6 +20,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 
 /**
  * <P>Description: 封装redis方法. </P>
@@ -31,6 +33,7 @@ import java.util.Set;
  * @version 1.0
  * @since java 1.8.0
  */
+@Slf4j
 public class RedisClient {
 
     private Pool<Jedis> pool;
@@ -40,6 +43,8 @@ public class RedisClient {
     private static final int DEFAULT_TIMEOUT = 2000;
 
     private static final String ADDRS_SPLITOR = ",";
+
+    private static final String UNLOCK_FAILED = "unlocked_failed";
 
     /**
      * 构建单机redis连接池.
@@ -91,6 +96,57 @@ public class RedisClient {
 
     }
 
+    public static void main(String[] args) {
+        final RedisClient c = standAlonePool("192.168.174.130", 6379, 1000, 1000, null, 10, 10, 1, true);
+        c.lockAcquire("testLock", "1", 1000);
+        c.tryUnlock("testLock", "1");
+        c.lockAcquire("testLock", "2", 1000);
+        c.tryUnlock("testLock", "1");
+
+    }
+
+    /**
+     * 尝试获取锁，拿到锁才会返回.
+     *
+     * @param lockKey  锁在redis中的key
+     * @param serialNo 流水号
+     * @param expired  锁超时，单位毫秒
+     */
+    public void lockAcquire(final String lockKey, final String serialNo, final long expired) {
+        while (true) {
+            if (!setNotExist(lockKey, serialNo, expired)) break;
+            try {
+                TimeUnit.MILLISECONDS.sleep(10);
+            } catch (InterruptedException e) {
+                log.warn("sleep 被 中断了", e);
+            }
+        }
+    }
+
+    /**
+     * 尝试解锁.
+     *
+     * @param lockKey  锁在redis中的key
+     * @param serialNo 流水号
+     */
+    public void tryUnlock(final String lockKey, final String serialNo) {
+        final Object eval = eval(" " +
+                " local ret = {} \n" +
+                " local ret1 = redis.call('get',KEYS[1]) \n" +
+                " local ret2 = '' \n" +
+                "if ret1 == KEYS[2] " +
+                " then ret2 = redis.call('del',KEYS[1])" +
+                " else ret2 = KEYS[3] end \n" +
+                " ret[1] = ret1 \n" +
+                " ret[2] = ret2 \n" +
+                "return ret", lockKey, serialNo, UNLOCK_FAILED);
+        final List<Object> result = (List<Object>) eval;
+        if (UNLOCK_FAILED.equals(result.get(1))) {
+            log.warn("redis解锁失败，已被其他锁占领，当前占领锁的serialNo={}", result.get(0));
+        } else {
+            log.info("redis解锁成功，serialNo={}", result.get(0));
+        }
+    }
 
     // ==== 通用操作 start ===========================
 
@@ -1576,6 +1632,23 @@ public class RedisClient {
     public void publish(final String channel, final String message) {
         try (final Jedis resource = pool.getResource()) {
             resource.publish(channel, message);
+        }
+    }
+
+
+    public Object eval(final String script, final String... keys) {
+        try (final Jedis resource = pool.getResource()) {
+            if (keys == null) {
+                return resource.eval(script);
+            } else {
+                return resource.eval(script, keys.length, keys);
+            }
+        }
+    }
+
+    public Object eval(final String script, final List<String> keys, final List<String> args) {
+        try (final Jedis resource = pool.getResource()) {
+            return resource.eval(script, keys, args);
         }
     }
 
